@@ -1,33 +1,49 @@
-Ghost Protocol
+# Ghost Protocol
 
-An open-source federated communication protocol with end-to-end encryption and cryptographic identities.
+> **An open-source federated communication protocol with end-to-end encryption and cryptographic identities.**
 
 Ghost Protocol is an experimental communication protocol focused on privacy, decentralization and user ownership.
 
-Instead of relying on centralized servers, passwords, phone numbers or email addresses, every user owns a cryptographic identity generated locally in the browser. Nodes automatically discover each other on the local network and form a federated communication network. Nodes only relay encrypted packets—they cannot read message contents.
+Instead of relying on centralized accounts, passwords, phone numbers or email addresses, every user owns a cryptographic identity generated locally in the browser.
 
-🚧 Current Status: Alpha / Proof of Concept
+Nodes automatically discover each other on the local network and form a federated network. They only relay encrypted packets and **cannot read message contents**.
 
-Features
-🔐 End-to-End Encryption (ECDH P-256 + AES-GCM)
-🔑 Cryptographic Identity (no passwords)
-🌐 Federated Nodes
-🔍 Automatic Peer Discovery (Local Network)
-💬 Offline Encrypted Message Queue
-📱 Progressive Web App (PWA)
-🚫 No Central Account Server
-🛡️ Public-Key Based Identity
-🔄 Automatic Node Federation
-Tested
-✅ Deterministic identity generation from the public key
-✅ End-to-end encrypted messaging
-✅ Automatic node discovery on the local network
-✅ Federation between multiple nodes
-✅ Cross-node encrypted message routing
-✅ Offline encrypted message delivery
-✅ Friend requests between users
-✅ Local identity backup and restore
-Project Structure
+> 🚧 **Status:** Alpha (Proof of Concept)
+
+---
+
+## ✨ Features
+
+- 🔐 End-to-End Encryption (ECDH P-256 + AES-GCM)
+- 🔑 Cryptographic identities
+- 🌐 Federated nodes
+- 🔍 Automatic peer discovery (LAN)
+- 💬 Offline encrypted message queue
+- 📱 Progressive Web App (PWA)
+- 🚫 No passwords
+- 🚫 No phone numbers
+- 🚫 No email accounts
+- 🛡️ Public-key based identity
+
+---
+
+## ✅ Current Features
+
+- Deterministic identity generation
+- Public-key derived user ID
+- End-to-end encrypted messaging
+- Automatic node discovery on local networks
+- Federation between multiple nodes
+- Cross-node encrypted routing
+- Offline message delivery
+- Friend requests
+- Identity backup and restore
+
+---
+
+## 📂 Project Structure
+
+```text
 ghost-protocol/
 │
 ├── server/
@@ -41,149 +57,186 @@ ghost-protocol/
     ├── style.css
     ├── manifest.json
     └── sw.js
-Quick Start
+```
+
+---
+
+## 🚀 Quick Start
 
 Clone the repository:
 
+```bash
 git clone https://github.com/GProtocolLabs/ghost-protocol.git
+```
 
 Start a node:
 
+```bash
 cd server
 python app.py --port 8000
+```
 
-Open:
+Open your browser:
 
+```
 http://localhost:8000
+```
 
-Create your cryptographic identity.
+Create a new identity.
 
 If another Ghost node is running on the same local network, both nodes will automatically discover each other and join the same federated network.
 
 No manual peer configuration is required.
 
-How It Works
+---
 
-Every user generates a cryptographic identity locally.
+## 🏗 Architecture
 
-Browser
-    │
+```text
+┌─────────────┐
+│  Browser    │
+└──────┬──────┘
+       │
 Generate Key Pair
-    │
+       │
 User ID = SHA-256(Public Key)
-    │
+       │
 Encrypted Messages
-    │
-Ghost Node
-    │
-════════════════════════════
-    │
-Ghost Node
-    │
-════════════════════════════
-    │
-Ghost Node
+       │
+┌─────────────┐
+│ Ghost Node  │
+└──────┬──────┘
+       │
+══════════════════════════════
+       │
+┌─────────────┐
+│ Ghost Node  │
+└──────┬──────┘
+       │
+══════════════════════════════
+       │
+┌─────────────┐
+│ Ghost Node  │
+└─────────────┘
+```
 
 Nodes never own user accounts.
 
 Nodes never store passwords.
 
-Nodes never decrypt messages.
+Nodes only relay encrypted packets.
 
-They simply relay encrypted packets across the federation.
+---
 
-Security
-Identity
-ECDH P-256 key pair
-Generated locally inside the browser
-Stored in IndexedDB
-User ID derived from SHA-256 of the public key
-Backup
+## 🔒 Security
 
-The private key can be exported as a backup.
+### Identity
+
+- ECDH P-256 key pair
+- Generated locally inside the browser
+- Stored in IndexedDB
+- User ID = SHA-256(Public Key)
+
+### Backup
+
+Users can export their private key.
 
 Without the private key, the identity cannot be recovered.
 
-Ghost Protocol follows the self-custody model.
+Ghost Protocol follows a self-custody model similar to cryptocurrency wallets.
 
-Encryption
+### Encryption
 
-Each message is encrypted using:
+Every message uses:
 
-ECDH shared secret
-AES-256-GCM
-Random IV per message
+- ECDH shared secret
+- AES-256-GCM
+- Random IV
 
 Only the intended recipient can decrypt the message.
 
-What Nodes Can See
+### What Nodes Can See
 
-Nodes only know:
+Nodes can only see:
 
-Sender ID
-Recipient ID
-Timestamp
+- Sender ID
+- Recipient ID
+- Timestamp
 
-Nodes cannot access:
+Nodes **cannot** access:
 
-Message contents
-Private keys
-User passwords (none exist)
-Current Limitations
+- Message contents
+- Private keys
+- User passwords
 
-This is still an Alpha implementation.
+---
+
+## ⚠ Known Limitations
+
+Ghost Protocol is currently an Alpha implementation.
 
 Current limitations include:
 
-Metadata is not yet protected.
-Identity registration is not signed.
-No Perfect Forward Secrecy.
-No NAT traversal.
-No multi-device synchronization.
-Home node migration is not implemented.
-Routing currently uses flood + TTL.
-Roadmap
-✅ Cryptographic identities
-✅ End-to-end encryption
-✅ Federated nodes
-✅ Automatic LAN discovery
-✅ Friend requests
-✅ Offline messages
-⬜ Signed identity registration
-⬜ Perfect Forward Secrecy
-⬜ Group conversations
-⬜ File transfer
-⬜ Voice calls
-⬜ Video calls
-⬜ Mobile applications
-⬜ Distributed routing (DHT)
-Philosophy
+- Metadata is not protected.
+- Identity registration is not signed.
+- No Perfect Forward Secrecy.
+- No NAT traversal.
+- No multi-device synchronization.
+- Home-node migration is not implemented.
+- Routing currently uses Flood + TTL.
 
-Ghost Protocol is built around a simple principle:
+---
 
-Users should own their identity.
+## 🗺 Roadmap
 
-Servers should relay messages—not own accounts.
+- ✅ Cryptographic identities
+- ✅ End-to-end encryption
+- ✅ Automatic LAN discovery
+- ✅ Federated nodes
+- ✅ Friend requests
+- ✅ Offline messages
+- ⬜ Signed identity registration
+- ⬜ Perfect Forward Secrecy
+- ⬜ Group conversations
+- ⬜ File transfer
+- ⬜ Voice calls
+- ⬜ Video calls
+- ⬜ Mobile applications
+- ⬜ Distributed routing (DHT)
 
-Privacy should be the default.
+---
 
-Open protocols build a freer digital world.
+## 💡 Philosophy
 
-Contributing
+Ghost Protocol is built around a simple principle.
+
+> Users should own their identity.
+>
+> Servers should relay messages — not own accounts.
+>
+> Privacy should be the default.
+>
+> Open protocols build a freer digital world.
+
+---
+
+## 🤝 Contributing
 
 Contributions are welcome.
 
 You can help by:
 
-Reporting bugs
-Improving documentation
-Reviewing security
-Optimizing performance
-Developing new features
-Improving the protocol specification
+- Reporting bugs
+- Improving documentation
+- Reviewing security
+- Optimizing performance
+- Developing new features
+- Improving the protocol
 
-Feel free to open Issues or submit Pull Requests.
+Pull Requests and Issues are always welcome.
 
-License
+---
 
-MIT License
+## 📄 License
+
+Released under the MIT License.
