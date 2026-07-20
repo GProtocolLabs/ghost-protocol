@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Chat P2P</title>
+  <meta name="theme-color" content="#0f1115" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+</head>
+<body>
+
+  <div id="identity-screen" class="screen">
+    <div class="login-card">
+      <h1>🔐 Chat P2P</h1>
+      <p>Sem servidor central, sem telefone, sem e-mail.</p>
+      <button id="create-identity-btn" class="btn-primary">Criar nova identidade</button>
+      <button id="restore-identity-btn" class="btn-secondary" style="margin-top:8px">Já tenho uma chave de backup</button>
+      <p id="identity-status" class="status-text"></p>
+    </div>
+  </div>
+
+  <div id="restore-screen" class="screen hidden">
+    <div class="login-card">
+      <h1>Restaurar identidade</h1>
+      <p>Cole abaixo a chave de backup que você salvou.</p>
+      <form id="restore-form">
+        <textarea id="restore-input" rows="4" placeholder="Cole sua chave de backup aqui" required></textarea>
+        <button type="submit" class="btn-primary">Restaurar</button>
+        <button type="button" id="restore-cancel-btn" class="btn-secondary">Voltar</button>
+      </form>
+      <p id="restore-status" class="status-text"></p>
+    </div>
+  </div>
+
+  <div id="backup-screen" class="screen hidden">
+    <div class="login-card">
+      <h1>⚠️ Guarde sua chave de backup</h1>
+      <p>Esta é a <strong>única</strong> forma de recuperar sua identidade.</p>
+      <textarea id="backup-key-display" rows="4" readonly></textarea>
+      <button id="copy-backup-btn" class="btn-secondary" style="margin-top:8px">Copiar</button>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:16px;font-size:.85rem;color:var(--text-dim)">
+        <input type="checkbox" id="backup-confirm-checkbox" style="width:auto" />
+        Eu salvei essa chave em um lugar seguro
+      </label>
+      <button id="backup-continue-btn" class="btn-primary" style="margin-top:12px" disabled>Continuar</button>
+    </div>
+  </div>
+
+  <div id="name-setup-screen" class="screen hidden">
+    <div class="login-card">
+      <h1>Como você quer ser chamado?</h1>
+      <p>Esse nome fica visível para outros na rede local.</p>
+      <form id="name-setup-form">
+        <input id="setup-name-input" type="text" placeholder="Seu nome" maxlength="60" required />
+        <button type="submit" class="btn-primary">Continuar</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="chats-screen" class="screen hidden">
+    <header class="app-header">
+      <strong>Conversas</strong>
+      <div class="header-actions">
+        <button id="open-settings-btn" title="Configurações">⚙️</button>
+        <button id="open-network-btn" title="Rede">🌐</button>
+        <button id="open-my-card-btn" title="Meu código de contato">🪪</button>
+        <button id="open-new-chat-btn" title="Adicionar contato">＋</button>
+      </div>
+    </header>
+    <div id="friend-request-toast-container"></div>
+    <div id="conversations-wrapper" style="flex:1;overflow-y:auto">
+      <div id="conversations-list"></div>
+      <div id="nearby-users-section" style="display:none">
+        <div class="section-header">👥 Usuários na rede local</div>
+        <div id="nearby-users-list"></div>
+      </div>
+    </div>
+    <p id="connection-status" class="conn-status-bar">conectando ao nó...</p>
+  </div>
+
+  <div id="chat-screen" class="screen hidden">
+    <header class="chat-header">
+      <button id="back-to-chats-btn" class="icon-btn">←</button>
+      <div class="room-info">
+        <strong id="chat-contact-name">Contato</strong>
+        <div class="subtitle" id="chat-contact-id"></div>
+      </div>
+      <div style="width:32px"></div>
+    </header>
+    <main id="messages" class="messages"></main>
+    <div id="reply-bar" class="reply-bar hidden">
+      <div class="preview" id="reply-preview-text"></div>
+      <button id="cancel-reply-btn">✕</button>
+    </div>
+    <form id="message-form" class="message-form">
+      <input id="message-input" type="text" placeholder="Digite uma mensagem..." autocomplete="off" />
+      <button type="submit">Enviar</button>
+    </form>
+  </div>
+
+  <!-- Modal: meu código de contato -->
+  <div id="my-card-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h2>Seu código de contato</h2>
+      <p class="status-text">Compartilhe o QR code ou o texto abaixo.</p>
+      <div class="qr-container" id="my-card-qr"></div>
+      <textarea id="my-card-display" rows="2" readonly></textarea>
+      <div class="modal-actions">
+        <button type="button" id="copy-my-card-btn" class="btn-primary">Copiar código</button>
+        <button type="button" id="close-my-card-btn" class="btn-secondary">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: novo contato -->
+  <div id="new-chat-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h2>Adicionar contato</h2>
+      <div class="tab-bar">
+        <button class="active" data-tab="scan">📷 Ler QR</button>
+        <button data-tab="paste">📋 Colar código</button>
+        <button data-tab="nearby">📡 Rede local</button>
+        <button data-tab="network">🌐 Nós</button>
+      </div>
+      <div id="tab-scan">
+        <p class="status-text">Aponte a câmera para o QR code da outra pessoa.</p>
+        <div id="qr-reader"></div>
+        <p id="scan-status" class="status-text"></p>
+      </div>
+      <div id="tab-paste" class="hidden">
+        <form id="new-chat-form">
+          <textarea id="new-contact-card" rows="4" placeholder="Cole o código de contato aqui" required></textarea>
+          <input id="new-contact-alias" type="text" placeholder="Nome para exibir" maxlength="60" required />
+          <div class="modal-actions">
+            <button type="button" id="cancel-new-chat-btn" class="btn-secondary">Cancelar</button>
+            <button type="submit" class="btn-primary">Adicionar</button>
+          </div>
+        </form>
+        <p id="new-chat-status" class="status-text"></p>
+      </div>
+      <div id="tab-nearby" class="hidden">
+        <p class="status-text">Usuários no mesmo nó. Toque para enviar pedido de amizade.</p>
+        <div id="modal-nearby-list"></div>
+        <p id="nearby-chat-status" class="status-text"></p>
+        <button type="button" id="cancel-nearby-btn" class="btn-secondary" style="margin-top:10px">Fechar</button>
+      </div>
+      <div id="tab-network" class="hidden">
+        <p class="status-text">Nós conectados na rede federada. Clique para ver usuários e fazer amizade.</p>
+        <div id="modal-network-list"></div>
+        <p id="network-connect-status" class="status-text"></p>
+        <button type="button" id="cancel-network-btn" class="btn-secondary" style="margin-top:10px">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: rede -->
+  <div id="network-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h2>🌐 Rede</h2>
+      <p class="status-text">Este é o seu nó e os peers conectados. Conecte-se a novos nós manualmente.</p>
+      <div>
+        <label>URL do peer</label>
+        <div style="display:flex;gap:6px">
+          <input id="peer-url-input" type="text" placeholder="ws://192.168.x.x:8000/ws/peer" />
+          <button id="connect-peer-btn" class="btn-primary" style="width:auto;padding:10px 16px;flex-shrink:0">Conectar</button>
+        </div>
+      </div>
+      <p id="network-modal-status" class="status-text"></p>
+      <div id="network-modal-list" style="margin-top:8px"></div>
+      <button type="button" id="close-network-modal-btn" class="btn-secondary" style="margin-top:10px">Fechar</button>
+    </div>
+  </div>
+
+  <!-- Modal: configurações -->
+  <div id="settings-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h2>Configurações</h2>
+      <label>Seu nome (visível na rede local)</label>
+      <input id="settings-name-input" type="text" maxlength="60" />
+      <button id="settings-save-name-btn" class="btn-primary" style="margin-top:8px">Salvar nome</button>
+      <hr style="border-color: var(--border); margin: 16px 0" />
+      <label>Nó ao qual você está conectado</label>
+      <input id="settings-node-url" type="text" placeholder="ws://localhost:8000/ws/client" />
+      <button id="settings-reconnect-btn" class="btn-secondary" style="margin-top:8px">Reconectar</button>
+      <hr style="border-color: var(--border); margin: 16px 0" />
+      <button id="settings-close-btn" class="btn-secondary">Fechar</button>
+      <button id="logout-btn" class="btn-danger">Apagar identidade deste aparelho</button>
+      <p id="settings-status" class="status-text"></p>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
