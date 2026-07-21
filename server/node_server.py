@@ -14,6 +14,7 @@ import sqlite3
 import asyncio
 import argparse
 import base64
+import socket
 from typing import Dict, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -34,15 +35,21 @@ parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)
 parser.add_argument("--peers", type=str, default=os.environ.get("PEERS", ""))
 parser.add_argument("--node-id", type=str, default=os.environ.get("NODE_ID", ""))
 parser.add_argument("--db", type=str, default=os.environ.get("NODE_DB", ""))
+parser.add_argument("--udp-port", type=int, default=int(os.environ.get("UDP_PORT", 9000)))
+parser.add_argument("--udp-discover", type=str, default=os.environ.get("UDP_DISCOVER", "true"))
 known_args, _ = parser.parse_known_args()
 
 PORT = known_args.port
 PEER_URLS = [p.strip() for p in known_args.peers.split(",") if p.strip()]
 NODE_ID = known_args.node_id or f"node-{uuid.uuid4().hex[:8]}"
 DB_PATH = known_args.db or os.path.join(BASE_DIR, f"node_{PORT}.db")
+UDP_PORT = known_args.udp_port
+UDP_DISCOVER = known_args.udp_discover.lower() in ("true", "1", "yes")
 
 MAX_TTL = 6
 SEEN_MSG_EXPIRY = 300
+UDP_ANNOUNCE_INTERVAL = 30   # seconds between UDP hello broadcasts
+UDP_PEER_TIMEOUT = 120       # seconds before considering a UDP-discovered peer gone
 
 # --------------------------------------------------------------------------
 # Banco de dados
@@ -104,6 +111,164 @@ class PeerLink:
         await self._send_fn(json.dumps(data))
 
 # --------------------------------------------------------------------------
+# UDP Discovery (LAN auto-peering)
+# --------------------------------------------------------------------------
+
+# Track UDP-discovered peers: node_id -> {"ip", "port", "last_seen"}
+udp_peers: Dict[str, dict] = {}
+# Prevent duplicate outbound connections for the same URL
+pending_urls: Set[str] = set()
+
+def get_local_ip() -> str:
+    """Best-effort local LAN IP."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+async def udp_broadcast_loop():
+    """Periodically send a UDP hello packet to the LAN broadcast address."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    local_ip = get_local_ip()
+    payload = json.dumps({
+        "type": "hello",
+        "node_id": NODE_ID,
+        "ip": local_ip,
+        "port": PORT,
+    }).encode("utf-8")
+
+    print(f"[udp] Broadcasting presence on UDP port {UDP_PORT} (LAN IP: {local_ip}, WS port: {PORT})")
+
+    while True:
+        try:
+            sock.sendto(payload, ("<broadcast>", UDP_PORT))
+        except Exception as e:
+            print(f"[udp] Broadcast error: {e}")
+        await asyncio.sleep(UDP_ANNOUNCE_INTERVAL)
+
+class _UDPDiscoveryProtocol(asyncio.DatagramProtocol):
+    """DatagramProtocol-based UDP listener.
+
+    Necessário porque loop.sock_recvfrom() não existe no ProactorEventLoop
+    (o event loop padrão do asyncio no Windows), só no SelectorEventLoop.
+    create_datagram_endpoint funciona em ambos.
+    """
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        asyncio.create_task(_handle_udp_hello(data, addr))
+
+    def error_received(self, exc):
+        print(f"[udp] Listen error: {exc}")
+
+
+async def _handle_udp_hello(data: bytes, addr):
+    try:
+        msg = json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+
+    if msg.get("type") != "hello":
+        return
+
+    remote_node_id = msg.get("node_id")
+    remote_ip = msg.get("ip", addr[0])
+    remote_port = msg.get("port")
+
+    if not remote_node_id or not remote_port:
+        return
+
+    # Ignore our own broadcasts
+    if remote_node_id == NODE_ID:
+        return
+
+    ws_url = f"ws://{remote_ip}:{remote_port}/ws/peer"
+
+    # Already connected or already connecting?  Check both the real node_id
+    # and the pending URL to avoid creating duplicate outbound tasks.
+    already_connected = remote_node_id in peer_connections or ws_url in pending_urls
+    if not already_connected:
+        for key in peer_connections:
+            if ws_url in key or remote_node_id in key:
+                already_connected = True
+                break
+    if already_connected:
+        udp_peers[remote_node_id] = {"ip": remote_ip, "port": remote_port, "last_seen": time.time()}
+        return
+
+    # Tie-breaking: only the node with the smaller node_id initiates.
+    # This prevents duplicate connections when both nodes discover each other
+    # at the same time via UDP.
+    if NODE_ID >= remote_node_id:
+        # We are not the smaller one — the other node will connect to us.
+        # Still track it so we know it's out there.
+        udp_peers[remote_node_id] = {"ip": remote_ip, "port": remote_port, "last_seen": time.time()}
+        return
+
+    # New node discovered — connect via WebSocket
+    pending_urls.add(ws_url)
+    print(f"[udp] Discovered new node: {remote_node_id} at {ws_url}")
+    udp_peers[remote_node_id] = {"ip": remote_ip, "port": remote_port, "last_seen": time.time()}
+    asyncio.create_task(connect_to_peer(ws_url))
+
+
+async def udp_listen_loop():
+    """Listen for UDP hello packets from other nodes on the LAN.
+
+    Usa create_datagram_endpoint em vez de socket bruto + loop.sock_recvfrom
+    porque este último não é suportado pelo ProactorEventLoop do Windows.
+    """
+    loop = asyncio.get_event_loop()
+
+    reuse_kwargs = {}
+    if sys.platform != "win32":
+        # SO_REUSEPORT não existe no Windows; nesse caso deixamos o asyncio
+        # usar apenas o comportamento padrão de bind.
+        reuse_kwargs["reuse_port"] = True
+
+    transport, _protocol = await loop.create_datagram_endpoint(
+        _UDPDiscoveryProtocol,
+        local_addr=("0.0.0.0", UDP_PORT),
+        **reuse_kwargs,
+    )
+
+    print(f"[udp] Listening for peer discovery on UDP port {UDP_PORT}")
+
+    try:
+        # Mantém a task viva; o recebimento real acontece em datagram_received
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        transport.close()
+
+async def udp_cleanup_loop():
+    """Remove UDP-discovered peers that haven't announced in UDP_PEER_TIMEOUT seconds."""
+    while True:
+        await asyncio.sleep(30)
+        now = time.time()
+        stale = [
+            nid for nid, info in udp_peers.items()
+            if now - info.get("last_seen", 0) > UDP_PEER_TIMEOUT
+        ]
+        for nid in stale:
+            if nid in peer_connections:
+                print(f"[udp] Peer {nid} timed out (no UDP announcements), disconnecting")
+                peer_connections.pop(nid, None)
+                peer_users.pop(nid, None)
+            udp_peers.pop(nid, None)
+        if stale:
+            print(f"[udp] Cleaned up {len(stale)} stale peer(s)")
+
+# --------------------------------------------------------------------------
 # Helpers: peer user sharing
 # --------------------------------------------------------------------------
 
@@ -122,6 +287,18 @@ async def broadcast_peer_user_joined(user_id: str, display_name: str):
                 "type": "peer_user_joined",
                 "user_id": user_id,
                 "display_name": display_name,
+            })
+        except Exception:
+            pass
+
+async def broadcast_peer_user_left(user_id: str):
+    for node_id, link in list(peer_connections.items()):
+        if node_id.startswith("pending:"):
+            continue
+        try:
+            await link.send({
+                "type": "peer_user_left",
+                "user_id": user_id,
             })
         except Exception:
             pass
@@ -164,6 +341,19 @@ def is_peer_user(user_id: str) -> bool:
     for pu_list in peer_users.values():
         if any(u["user_id"] == user_id for u in pu_list):
             return True
+    return False
+
+async def relay_event_to_peer(to_user: str, event: str, data: dict):
+    """Relay typing/receipt/reaction/etc events to the peer that hosts to_user."""
+    for node_id, pu_list in peer_users.items():
+        if any(u["user_id"] == to_user for u in pu_list):
+            link = peer_connections.get(node_id)
+            if link:
+                try:
+                    await link.send({"type": event, **data})
+                    return True
+                except Exception:
+                    pass
     return False
 
 # --------------------------------------------------------------------------
@@ -489,6 +679,77 @@ async def client_ws(ws: WebSocket):
             elif msg_type == "ping":
                 await ws.send_text(json.dumps({"type": "pong"}))
 
+            elif msg_type == "typing":
+                if not my_user_id:
+                    continue
+                to_user = data.get("to")
+                if not to_user:
+                    continue
+                # Deliver locally
+                recipient_ws = local_clients.get(to_user)
+                if recipient_ws:
+                    await recipient_ws.send_text(json.dumps({
+                        "type": "typing",
+                        "from": my_user_id,
+                        "to": to_user,
+                        "alias": data.get("alias", my_user_id[:8]),
+                    }))
+                else:
+                    # Relay to peer
+                    await relay_event_to_peer(to_user, "peer_typing", {
+                        "from": my_user_id,
+                        "to": to_user,
+                        "alias": data.get("alias", my_user_id[:8]),
+                    })
+
+            elif msg_type == "receipt":
+                if not my_user_id:
+                    continue
+                envelope = data.get("envelope")
+                receipt_type = data.get("receipt_type", "delivered")
+                to_user = envelope.get("to") if envelope else None
+                if not to_user:
+                    continue
+                # Deliver locally
+                recipient_ws = local_clients.get(to_user)
+                if recipient_ws:
+                    await recipient_ws.send_text(json.dumps({
+                        "type": "receipt",
+                        "envelope": envelope,
+                        "receipt_type": receipt_type,
+                    }))
+                else:
+                    # Relay to peer
+                    await relay_event_to_peer(to_user, "peer_receipt", {
+                        "envelope": envelope,
+                        "receipt_type": receipt_type,
+                    })
+
+            elif msg_type == "delete_account":
+                if not my_user_id:
+                    continue
+                # Remove user from DB and memory
+                conn = db_connect()
+                conn.execute("DELETE FROM local_users WHERE user_id=?", (my_user_id,))
+                conn.execute("DELETE FROM offline_queue WHERE user_id=?", (my_user_id,))
+                conn.commit()
+                conn.close()
+                local_clients.pop(my_user_id, None)
+                # Clean orphaned friend requests
+                to_remove = [rid for rid, req in pending_friend_requests.items() if req.get("from") == my_user_id or req.get("to") == my_user_id]
+                for rid in to_remove:
+                    pending_friend_requests.pop(rid, None)
+                # Notify peers
+                await broadcast_peer_user_left(my_user_id)
+                await ws.send_text(json.dumps({"type": "account_deleted"}))
+                print(f"[no] User {my_user_id} deleted their account")
+                my_user_id = None  # don't clean up again in finally
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                return
+
     except WebSocketDisconnect:
         pass
     finally:
@@ -591,6 +852,39 @@ async def peer_ws(ws: WebSocket):
                     continue
                 await route_envelope(envelope, msg_id, ttl, exclude_peer=remote_node_id)
 
+            elif msg_type == "peer_typing":
+                # Relay typing event from a peer to a local user
+                to_user = data.get("to")
+                recipient_ws = local_clients.get(to_user)
+                if recipient_ws:
+                    await recipient_ws.send_text(json.dumps({
+                        "type": "typing",
+                        "from": data.get("from"),
+                        "to": to_user,
+                        "alias": data.get("alias", ""),
+                    }))
+
+            elif msg_type == "peer_receipt":
+                # Relay receipt event from a peer to a local user
+                envelope = data.get("envelope")
+                to_user = envelope.get("to") if envelope else None
+                recipient_ws = local_clients.get(to_user) if to_user else None
+                if recipient_ws:
+                    await recipient_ws.send_text(json.dumps({
+                        "type": "receipt",
+                        "envelope": envelope,
+                        "receipt_type": data.get("receipt_type", "delivered"),
+                    }))
+
+            elif msg_type == "peer_user_left":
+                user_id = data.get("user_id")
+                if user_id and remote_node_id in peer_users:
+                    peer_users[remote_node_id] = [
+                        u for u in peer_users[remote_node_id]
+                        if u["user_id"] != user_id
+                    ]
+                    print(f"[federacao] Peer {remote_node_id} removed user {user_id}")
+
     except WebSocketDisconnect:
         pass
     finally:
@@ -690,9 +984,41 @@ async def connect_to_peer(peer_url: str):
                             continue
                         await route_envelope(envelope, msg_id, ttl, exclude_peer=temp_id)
 
+                    elif data.get("type") == "peer_typing":
+                        to_user = data.get("to")
+                        recipient_ws = local_clients.get(to_user)
+                        if recipient_ws:
+                            await recipient_ws.send_text(json.dumps({
+                                "type": "typing",
+                                "from": data.get("from"),
+                                "to": to_user,
+                                "alias": data.get("alias", ""),
+                            }))
+
+                    elif data.get("type") == "peer_receipt":
+                        envelope = data.get("envelope")
+                        to_user = envelope.get("to") if envelope else None
+                        recipient_ws = local_clients.get(to_user) if to_user else None
+                        if recipient_ws:
+                            await recipient_ws.send_text(json.dumps({
+                                "type": "receipt",
+                                "envelope": envelope,
+                                "receipt_type": data.get("receipt_type", "delivered"),
+                            }))
+
+                    elif data.get("type") == "peer_user_left":
+                        user_id = data.get("user_id")
+                        if user_id and temp_id in peer_users:
+                            peer_users[temp_id] = [
+                                u for u in peer_users[temp_id]
+                                if u["user_id"] != user_id
+                            ]
+                            print(f"[federacao] Peer {temp_id} removed user {user_id}")
+
         except Exception as e:
             print(f"[federacao] Falha ao conectar em {peer_url} ({e}). Tentando de novo em 5s...")
         finally:
+            pending_urls.discard(peer_url)
             for key in list(peer_connections.keys()):
                 if key.endswith(peer_url):
                     peer_connections.pop(key, None)
@@ -707,6 +1033,12 @@ async def on_startup():
         print(f"[no] Conectando aos vizinhos: {PEER_URLS}")
     for url in PEER_URLS:
         asyncio.create_task(connect_to_peer(url))
+
+    # Start UDP discovery if enabled
+    if UDP_DISCOVER:
+        asyncio.create_task(udp_broadcast_loop())
+        asyncio.create_task(udp_listen_loop())
+        asyncio.create_task(udp_cleanup_loop())
 
     async def periodic_cleanup():
         while True:
